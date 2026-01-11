@@ -1,0 +1,2 @@
+symbol,run_date,skew_trade_date_used,spot,spot_source,earnings_date,earnings_time_hint,earnings_source,earnings_error,front_expiry,back_expiry,atm_strike_used,atm_iv_front,atm_iv_back,term_slope,term_ratio,term_structure_source,atm_straddle_mid,implied_move_pct,quote_quality,avg_vol_30,rv20,rv30,iv_rv20,iv_rv30,rv_window_ok,vol_window_ok,term_structure_ok,implied_move_ok
+AAPL,2026-01-11,2026-01-09,259.37,hist_close_fallback,2026-01-13,,fmp:stable/earnings-calendar,,,,,,,,,live_ibkr_greeks_snapshot,,,,19903139.23,0.110983,0.122101,,,1,1,0,0
