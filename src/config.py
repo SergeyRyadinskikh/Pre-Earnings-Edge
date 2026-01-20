@@ -27,7 +27,7 @@ def load_config() -> Config:
         fmp_api_key=fmp,
         ib_host=(os.getenv("IB_HOST") or "127.0.0.1").strip(),
         ib_port=int((os.getenv("IB_PORT") or "4001").strip()),
-        ib_client_id=int((os.getenv("IB_CLIENT_ID") or "11").strip()),
+        ib_client_id=int((os.getenv("IB_CLIENT_ID") or "22").strip()),
         skew_db_path=skew_path,
         underlying_db_path=(os.getenv("UNDERLYING_DB_PATH") or r"data\underlying_daily.sqlite").strip(),
         out_dir=(os.getenv("OUT_DIR") or r"data\out\earnings_edge").strip(),

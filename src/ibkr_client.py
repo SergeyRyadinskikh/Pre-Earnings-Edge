@@ -5,40 +5,61 @@ from datetime import datetime
 
 from ib_insync import IB, Stock, Option, util
 
+
 @dataclass(frozen=True)
 class UnderlyingBar:
     date: str  # YYYY-MM-DD
     close: float
     volume: int
 
+
 def connect_ib(host: str, port: int, client_id: int) -> IB:
     ib = IB()
     ib.connect(host, port, clientId=client_id, readonly=True, timeout=10)
     return ib
 
+
+def _duration_str_from_days(days: int) -> str:
+    """
+    IBKR rule: >365 days must be requested in years (Error 321).
+    We'll map:
+      <=365  -> "XYZ D"
+      >365   -> "N Y" rounded up (min 1Y)
+    """
+    d = int(max(days, 30))
+    if d <= 365:
+        return f"{d} D"
+    years = (d + 364) // 365  # ceil
+    return f"{max(years, 1)} Y"
+
+
 def fetch_underlying_daily_bars(ib: IB, symbol: str, days: int = 60) -> List[UnderlyingBar]:
     stk = Stock(symbol.upper(), "SMART", "USD")
     ib.qualifyContracts(stk)
 
+    duration = _duration_str_from_days(days)
+
     bars = ib.reqHistoricalData(
         stk,
         endDateTime="",
-        durationStr=f"{max(days, 30)} D",
+        durationStr=duration,
         barSizeSetting="1 day",
         whatToShow="TRADES",
         useRTH=True,
         formatDate=1,
         keepUpToDate=False,
     )
+
     out: List[UnderlyingBar] = []
     for b in bars:
         d = util.formatIBDatetime(b.date)[:10]
         out.append(UnderlyingBar(date=d, close=float(b.close), volume=int(b.volume)))
 
     if len(out) == 0:
-        raise RuntimeError(f"IBKR returned no daily bars for {symbol}")
+        raise RuntimeError(f"IBKR returned no daily bars for {symbol} (durationStr={duration})")
 
     return out
+
 
 def _valid_price(x: Optional[float]) -> bool:
     try:
@@ -46,18 +67,12 @@ def _valid_price(x: Optional[float]) -> bool:
     except Exception:
         return False
 
+
 def fetch_spot_with_fallback(
     ib: IB,
     symbol: str,
     bars_fallback: Optional[List[UnderlyingBar]] = None,
 ) -> Tuple[float, str]:
-    """
-    Returns (spot, spot_source)
-    Spot source order:
-      1) snapshot marketPrice/last
-      2) delayed snapshot marketPrice/last
-      3) last close from historical daily bars (fallback)
-    """
     sym = symbol.upper()
     stk = Stock(sym, "SMART", "USD")
     ib.qualifyContracts(stk)
@@ -114,10 +129,12 @@ def fetch_spot_with_fallback(
 
     raise RuntimeError(f"Could not determine spot for {sym} (live+delayed snapshots empty, no bars fallback)")
 
+
 def _mid(bid: Optional[float], ask: Optional[float]) -> Optional[float]:
     if bid and ask and bid > 0 and ask > 0 and ask >= bid:
         return (bid + ask) / 2.0
     return None
+
 
 def fetch_atm_straddle_mid(
     ib: IB,
@@ -127,10 +144,9 @@ def fetch_atm_straddle_mid(
 ) -> Tuple[Optional[float], str]:
     sym = symbol.upper()
     call = Option(sym, expiry_yyyymmdd, strike, "C", "SMART")
-    put  = Option(sym, expiry_yyyymmdd, strike, "P", "SMART")
+    put = Option(sym, expiry_yyyymmdd, strike, "P", "SMART")
     ib.qualifyContracts(call, put)
 
-    # Try live, then delayed if empty
     def _snap_pair(mkt_type: int):
         ib.reqMarketDataType(mkt_type)
         tc = ib.reqMktData(call, "", snapshot=True, regulatorySnapshot=False)
@@ -150,7 +166,6 @@ def fetch_atm_straddle_mid(
     ib.cancelMktData(put)
 
     if c_mid is None or p_mid is None:
-        # retry delayed
         tc, tp = _snap_pair(4)
         c_mid = _mid(tc.bid, tc.ask) or (float(tc.last) if tc.last and tc.last > 0 else None)
         p_mid = _mid(tp.bid, tp.ask) or (float(tp.last) if tp.last and tp.last > 0 else None)
@@ -166,8 +181,10 @@ def fetch_atm_straddle_mid(
 
     return float(c_mid + p_mid), "|".join(quality_parts)
 
+
 def _yyyymmdd_to_date(exp: str):
     return datetime.strptime(exp, "%Y%m%d").date()
+
 
 def pick_expiries_from_chain(expirations: List[str], target_date_yyyy_mm_dd: Optional[str]) -> Tuple[str, str]:
     exps = sorted(expirations)
@@ -188,11 +205,11 @@ def pick_expiries_from_chain(expirations: List[str], target_date_yyyy_mm_dd: Opt
     back = min(exps[1:], key=lambda e: abs(_yyyymmdd_to_date(e).toordinal() - target))
     return front, back
 
+
 def fetch_atm_iv_for_expiry(ib: IB, symbol: str, expiry_yyyymmdd: str, spot: float) -> Tuple[Optional[float], float]:
     """
-    Returns (atm_iv, atm_strike) using modelGreeks.impliedVol if available.
-    Snapshot-based only (no generic ticks, no streaming).
-    Tries LIVE then DELAYED_FROZEN.
+    Snapshot-based IV from modelGreeks (no generic ticks).
+    Try LIVE then DELAYED_FROZEN.
     """
     sym = symbol.upper()
     stk = Stock(sym, "SMART", "USD")
@@ -215,18 +232,17 @@ def fetch_atm_iv_for_expiry(ib: IB, symbol: str, expiry_yyyymmdd: str, spot: flo
         ib.reqMarketDataType(mkt_type)
         t = ib.reqMktData(opt, "", snapshot=True, regulatorySnapshot=False)
         ib.sleep(2.0)
-
         iv = None
         if t.modelGreeks and t.modelGreeks.impliedVol and t.modelGreeks.impliedVol > 0:
             iv = float(t.modelGreeks.impliedVol)
         elif getattr(t, "impliedVolatility", None) and t.impliedVolatility > 0:
             iv = float(t.impliedVolatility)
-
         ib.cancelMktData(opt)
         return iv
 
     iv = _snap_iv(1) or _snap_iv(4)
     return iv, atm_strike
+
 
 def fetch_term_structure_live(
     ib: IB,
@@ -234,10 +250,6 @@ def fetch_term_structure_live(
     earnings_date_yyyy_mm_dd: Optional[str],
     spot: float,
 ) -> Tuple[str, str, float, float, float]:
-    """
-    Returns:
-      (front_expiry, back_expiry, atm_strike_used, iv_front, iv_back)
-    """
     sym = symbol.upper()
     stk = Stock(sym, "SMART", "USD")
     ib.qualifyContracts(stk)
@@ -253,10 +265,9 @@ def fetch_term_structure_live(
     iv_front, atm_strike = fetch_atm_iv_for_expiry(ib, sym, front_exp, spot)
     iv_back, _ = fetch_atm_iv_for_expiry(ib, sym, back_exp, spot)
 
-    # Don't hard-crash with a scary message; market-closed is common.
     if iv_front is None or iv_back is None:
         raise RuntimeError(
-            f"Live IV snapshot returned None (market may be closed / no option quotes). "
+            f"Live IV snapshot returned None (market may be closed / no option greeks). "
             f"{sym}: front={front_exp} iv_front={iv_front} | back={back_exp} iv_back={iv_back}"
         )
 
